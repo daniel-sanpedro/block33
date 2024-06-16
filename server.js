@@ -1,81 +1,122 @@
-const { Client } = require("pg");
-const client = new Client({
+const express = require("express");
+const app = express();
+const { Pool } = require("pg");
+const morgan = require("morgan");
+const port = process.env.PORT || 3000;
+
+const pool = new Pool({
   connectionString:
     process.env.DATABASE_URL || "postgres://localhost/acme_notes_categories_db",
 });
 
-const init = async () => {
-  try {
-    await client.connect();
+app.use(express.json());
+app.use(morgan("dev"));
 
-    let sql;
-
-    // Drop the notes table if it exists
-    sql = `
-      DROP TABLE IF EXISTS notes;
-    `;
-    await client.query(sql);
-
-    // Drop the categories table if it exists
-    sql = `
-      DROP TABLE IF EXISTS categories;
-    `;
-    await client.query(sql);
-
-    // Create the categories table
-    sql = `
-      CREATE TABLE categories(
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(100)
-      );
-    `;
-    await client.query(sql);
-
-    // Create the notes table
-    sql = `
-      CREATE TABLE notes(
-        id SERIAL PRIMARY KEY,
-        created_at TIMESTAMP DEFAULT now(),
-        updated_at TIMESTAMP DEFAULT now(),
-        ranking INTEGER DEFAULT 3 NOT NULL,
-        txt VARCHAR(255) NOT NULL,
-        category_id INTEGER REFERENCES categories(id) NOT NULL
-      );
-    `;
-    await client.query(sql);
-
-    // Insert categories
-    sql = `
-      INSERT INTO categories (name) VALUES ('SQL');
-      INSERT INTO categories (name) VALUES ('Express');
-      INSERT INTO categories (name) VALUES ('Shopping');
-    `;
-    await client.query(sql);
-
-    // Insert notes
-    sql = `
-      INSERT INTO notes (txt, ranking, category_id)
-      VALUES ('learn express', 5, (SELECT id FROM categories WHERE name='Express'));
-      INSERT INTO notes (txt, ranking, category_id)
-      VALUES ('add logging middleware', 5, (SELECT id FROM categories WHERE name='Express'));
-      INSERT INTO notes (txt, ranking, category_id)
-      VALUES ('write SQL queries', 4, (SELECT id FROM categories WHERE name='SQL'));
-      INSERT INTO notes (txt, ranking, category_id)
-      VALUES ('learn about foreign keys', 4, (SELECT id FROM categories WHERE name='SQL'));
-      INSERT INTO notes (txt, ranking, category_id)
-      VALUES ('buy a quart of milk', 2, (SELECT id FROM categories WHERE name='Shopping'));
-    `;
-    await client.query(sql);
-
-    console.log(
-      "Tables have been created and data has been seeded successfully"
-    );
-  } catch (err) {
-    console.error("Error creating tables and seeding data", err);
-  } finally {
-    await client.end();
+const validateEmployee = (employee) => {
+  const { name, department_id } = employee;
+  if (typeof name !== "string" || name.trim() === "") {
+    throw new Error("Invalid name");
+  }
+  if (typeof department_id !== "number") {
+    throw new Error("Invalid department ID");
   }
 };
 
-// Invoke the init function
+app.get("/api/employees", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM employees");
+    res.send(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/departments", async (req, res, next) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM departments");
+    res.send(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/employees", async (req, res, next) => {
+  try {
+    validateEmployee(req.body);
+    const { name, department_id } = req.body;
+    const SQL =
+      "INSERT INTO employees (name, department_id) VALUES ($1, $2) RETURNING *";
+    const { rows } = await pool.query(SQL, [name, department_id]);
+    res.send(rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/employees/:id", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await pool.query("DELETE FROM employees WHERE id = $1", [id]);
+    res.sendStatus(204);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put("/api/employees/:id", async (req, res, next) => {
+  try {
+    validateEmployee(req.body);
+    const { name, department_id } = req.body;
+    const { id } = req.params;
+    const SQL = `
+      UPDATE employees
+      SET name = $1, department_id = $2
+      WHERE id = $3 RETURNING *
+    `;
+    const { rows } = await pool.query(SQL, [name, department_id, id]);
+    res.send(rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send({ error: err.message });
+});
+
+// Database Initialization
+const init = async () => {
+  try {
+    await pool.connect();
+    await pool.query(`
+      DROP TABLE IF EXISTS employees;
+      DROP TABLE IF EXISTS departments;
+      CREATE TABLE departments (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100)
+      );
+      CREATE TABLE employees (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        department_id INTEGER REFERENCES departments(id)
+      );
+    `);
+    console.log("Tables created");
+    await pool.query(`
+      INSERT INTO departments (name) VALUES ('HR'), ('Engineering'), ('Sales');
+      INSERT INTO employees (name, department_id) 
+      VALUES 
+        ('Alice', (SELECT id FROM departments WHERE name = 'HR')),
+        ('Bob', (SELECT id FROM departments WHERE name = 'Engineering')),
+        ('Charlie', (SELECT id FROM departments WHERE name = 'Sales'));
+    `);
+    console.log("Data seeded");
+    app.listen(port, () => console.log(`Listening on port ${port}`));
+  } catch (err) {
+    console.error(err);
+  }
+};
+
 init();
